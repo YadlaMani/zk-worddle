@@ -1,0 +1,55 @@
+import { Barretenberg, Fr, UltraHonkBackend } from "@aztec/bb.js";
+import { ethers } from "ethers";
+import { Noir } from "@noir-lang/noir_js";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+const circuitPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../circuits/target/zk_worddle.json"
+);
+const circuit = JSON.parse(fs.readFileSync(circuitPath, "utf8"));
+export default async function generateProof() {
+  // Initialize Barretenberg
+  const bb = await Barretenberg.new();
+  const inputs = process.argv.slice(2);
+  try {
+    const noir = new Noir(circuit);
+    const honk = new UltraHonkBackend(circuit.bytecode, { threads: 1 });
+    const input = {
+      guess_hash: inputs[0],
+      answer_double_hash: inputs[1],
+      address: inputs[2],
+    };
+    //generate witness with noir
+    const { witness } = await noir.execute(input);
+    const orignalLog = console.log;
+    console.log = () => {};
+    //then proof with the witness using honk
+    const { proof, publicInputs } = await honk.generateProof(witness, {
+      keccak: true,
+    });
+    const offChainProof = await honk.generateProof(witness);
+    const isValid = await honk.verifyProof(offChainProof);
+    console.log = orignalLog;
+    const res = ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "bytes32[]"],
+      [proof, publicInputs]
+    );
+    return res;
+  } catch (err) {
+    console.log(err);
+    throw err;
+  }
+}
+(async () => {
+  generateProof()
+    .then((res) => {
+      process.stdout.write(res);
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.log(err);
+      process.exit(1);
+    });
+})();

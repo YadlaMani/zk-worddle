@@ -1,95 +1,98 @@
-// SPDX-License-Identifier: MIT
+//SPDX-License-Identifier:MIT
 pragma solidity >=0.8.21;
-import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IVerifier} from "./Verifier.sol";
-contract Worddle is ERC1155, Ownable{
-    IVerifier public s_verifier;
-    bytes32 public s_answer;
-    uint256 public constant MIN_DURATION=10800; //3 hours
-    uint256 public s_roundStartTime;
-    address public s_currentRoundWinner;
-    uint256 public s_currentRound;
-    mapping(address=>uint256) public s_lastCorrectGuessRound;
-    //Events
-    event Worddle_VerifierUpdated(IVerifier  verifier);
-    event Worddle_NewRound(bytes32 answer);
-    event Worddle_Winner(address indexed winner, uint256 indexed round);
-    event Worddle_Runnerup(address indexed runnerup, uint256 indexed round);
-    //Error
-    error Worddle_MinTimeNotPassed(uint256 minDuration, uint256 timeLeft);
-    error Worddle_NoRoundWinner();
-    error Worddle_RoundNotStarted();
-    error Worddle_AlreadyGuessedCorrectly();
-    error Worddle_InvalidProof();
 
-    constructor(IVerifier _verifier) ERC1155("https://ipfs.io/ipfs/QmZcH4YvBVVRJtdn4RdbaqgspFU8gH6P9vomDpBVpAL3u4/{id}.json"){ 
-        s_verifier = _verifier;
+//imports
+import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import {IVerifier} from "./Verifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+contract Worddle is ERC1155,Ownable{
+    IVerifier public s_verifier;
+    uint256 public s_currentRound;
+    //current round winner so we only mint one nft for the first winner
+    address public s_currentRoundWinner;
+    //Mapping to track number of wins for each address
+    mapping(address=>uint256) public s_winnerWins;
+    //Last correct guess by a user
+    mapping(address=>uint256)public s_lastCorrectGuessRound;
+    bytes32 public s_answer;//hash
+    uint256 public MIN_DURATION=10800;//Minium duration before starting new round
+    uint256 public s_roundStartTime;
+    constructor(IVerifier _verifier)ERC1155("https://ipfs.io/ipfs/QmZcH4YvBVVRJtdn4RdbaqgspFU8gH6P9vomDpBVpAL3u4/{id}.json"){
+        s_verifier=_verifier;
     }
-    //create  new round
-    function newRound(bytes32 _answer) external onlyOwner{
+    //events
+    event Worddle_RoundStarted();
+    event Worddle_VerifierUpdated(IVerifier newVerifier);
+    event Worddle_ProofSucceded(bool success);
+    event Worddle_NFTMinted(address indexed player, uint256 indexed tokenId);
+    //errors
+
+    error Worddle_MINTimeNotPassed(uint256 minTime,uint256 actualTime);
+    error Worddle_CurrentRoundHasNoWinner();
+    error Worddle_RoundNotStarted();
+    error Worddle_AlreadyAnsweredCorrectly();
+    error Worddle_IncorrectGuess();
+    //onlyOwner start the new round
+    function newRound(bytes32 _correctAnswer) external onlyOwner{
         if(s_roundStartTime==0){
             s_roundStartTime=block.timestamp;
-            s_answer=_answer;
+            s_answer=_correctAnswer;
         }else{
             if(block.timestamp<s_roundStartTime+MIN_DURATION){
-               revert Worddle_MinTimeNotPassed(MIN_DURATION, s_roundStartTime+MIN_DURATION-block.timestamp);
+                revert Worddle_MINTimeNotPassed(MIN_DURATION,block.timestamp-s_roundStartTime);
+
             }
             if(s_currentRoundWinner==address(0)){
-                revert Worddle_NoRoundWinner();
+                revert Worddle_CurrentRoundHasNoWinner();
             }
-            //Reset the round
-            s_roundStartTime=block.timestamp;
-            s_answer=_answer;
+            s_answer=_correctAnswer;
             s_currentRoundWinner=address(0);
-
         }
         s_currentRound++;
-       
-
-        emit Worddle_NewRound(_answer);
+        emit Worddle_RoundStarted();
     }
-
-
-    //allow users to submit a guess
-    function makeGuess(bytes memory proof) external returns(bool){
-        //check whether the first round has been started
+    //mint nft for the first correct guess
+    function makeGuess(bytes calldata proof) external returns (bool){
         if(s_currentRound==0){
             revert Worddle_RoundNotStarted();
         }
-        //check if the user has already guessed correctly
+        bytes32[] memory inputs=new bytes32[](2);
+        inputs[0]=s_answer;
+        inputs[1]=bytes32(uint256(uint160(msg.sender)));
         if(s_lastCorrectGuessRound[msg.sender]==s_currentRound){
-            revert Worddle_AlreadyGuessedCorrectly();
+            revert Worddle_AlreadyAnsweredCorrectly();
         }
-        //check the proof and verify it with the verifier contract
-        bytes32[] memory publicInputs=new bytes32[](1);
-        publicInputs[0]=s_answer;
-        bool proofResult=s_verifier.verify(proof,publicInputs);
-        //revert if incorrect
-        if(!proofResult){
-            revert Worddle_InvalidProof();
+        bool proofRes=s_verifier.verify(proof,inputs);
+        emit Worddle_ProofSucceded(proofRes);
+        if(!proofRes){
+            revert Worddle_IncorrectGuess();
         }
         s_lastCorrectGuessRound[msg.sender]=s_currentRound;
-
-        //if correct,check if they are first ,if they are then mint nft id 0
-        if (s_currentRoundWinner==address(0)){
+        if(s_currentRoundWinner==address(0)){
             s_currentRoundWinner=msg.sender;
+            s_winnerWins[msg.sender]++;
             _mint(msg.sender,0,1,"");
-            emit Worddle_Winner(msg.sender,s_currentRound);
+            emit Worddle_NFTMinted(msg.sender,0);
         }
-        //if correct not first, then mint id with 1
         else{
             _mint(msg.sender,1,1,"");
-            emit Worddle_Runnerup(msg.sender,s_currentRound);
+            emit Worddle_NFTMinted(msg.sender,1);
         }
-        return true;
-
+        return proofRes;
     }
 
-    //set a new verifier
-    function setVerifier(IVerifier _verifier) external onlyOwner {
-        s_verifier = _verifier;
+    
+
+    function setVerifier(IVerifier _verifier) external onlyOwner{
+        s_verifier=_verifier;
         emit Worddle_VerifierUpdated(_verifier);
     }
-
+    function getCurrentRoundStatus() external view returns(address){
+        return s_currentRoundWinner;
+    }
+    function getCurrentRoundWorddle() external view onlyOwner returns(bytes32){
+        return s_answer;
+    }
+    
 }
