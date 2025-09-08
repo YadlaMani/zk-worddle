@@ -1,24 +1,32 @@
-//SPDX-License-Identifier: MIT
-import {Test,console} from "forge-std/Test.sol";
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test, console} from "forge-std/Test.sol";
 import {Worddle} from "../src/Worddle.sol";
 import {HonkVerifier} from "../src/Verifier.sol";
+
 contract WorddleTest is Test {
     HonkVerifier verifier;
     Worddle worddle;
+
     uint256 constant FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
-    bytes32 constant ANSWER = bytes32(uint256(keccak256(abi.encodePacked(bytes32(uint256(keccak256("answer")) % FIELD_MODULUS)))) % FIELD_MODULUS);
-    bytes32 constant CORRECT_GUESS = bytes32(uint256(keccak256("answer")) % FIELD_MODULUS);
+    bytes32 constant ANSWER = bytes32(uint256(keccak256(abi.encodePacked(bytes32(uint256(keccak256("triangles")) % FIELD_MODULUS)))) % FIELD_MODULUS);
+    bytes32 constant CORRECT_GUESS = bytes32(uint256(keccak256("triangles")) % FIELD_MODULUS);
     bytes proof;
     bytes32[] publicInputs;
-    address user=makeAddr("user");
-    function setUp()public{
-        verifier=new HonkVerifier();
-        worddle=new Worddle(verifier);
+
+    address user = makeAddr("user");
+
+    function setUp() public {
+        verifier = new HonkVerifier();
+        worddle = new Worddle(verifier);
+
         worddle.newRound(ANSWER);
-        proof=_getProof(CORRECT_GUESS,ANSWER,user);
+        proof = _getProof(CORRECT_GUESS, ANSWER, user);
     }
-    function _getProof(bytes32 guess,bytes32 correctAnswer,address _user) internal returns(bytes memory _proof){
-           uint256 NUM_ARGS = 6;
+
+    function _getProof(bytes32 guess, bytes32 correctAnswer, address _user) internal returns (bytes memory _proof) {
+        uint256 NUM_ARGS = 6;
         string[] memory inputs = new string[](NUM_ARGS);
         inputs[0] = "npx";
         inputs[1] = "tsx";
@@ -30,40 +38,58 @@ contract WorddleTest is Test {
         bytes memory result = vm.ffi(inputs);
         (_proof, /*_publicInputs*/) =
             abi.decode(result, (bytes, bytes32[]));
-            return _proof;
     }
-    function testCorrectFirstGuess() public{
+
+    function testCorrectGuessPasses() public {
         vm.prank(user);
         worddle.makeGuess(proof);
-        vm.assertEq(worddle.s_winnerWins(user),1);
-        vm.assertEq(worddle.balanceOf(user,0),1);
-        vm.assertEq(worddle.balanceOf(user,1),0);
+        vm.assertEq(worddle.s_winnerWins(user), 1);
+        vm.assertEq(worddle.balanceOf(user, 0), 1);
+        vm.assertEq(worddle.balanceOf(user, 1), 0);
+
+        // check they can't try again
         vm.prank(user);
         vm.expectRevert();
         worddle.makeGuess(proof);
     }
-    function testStartNewRound() public{
-        //started a round in the setup
+
+    function testStartNewRound() public {
+        // start a round (in setUp)
+        // get a winner
         vm.prank(user);
         worddle.makeGuess(proof);
-        //make a winner and pass the time
-        vm.warp(worddle.MIN_DURATION()+1);
+        // min time passed
+        vm.warp(worddle.MIN_DURATION() + 1);
+        // start a new round
         worddle.newRound(bytes32(uint256(keccak256(abi.encodePacked(bytes32(uint256(keccak256("abcdefghi")) % FIELD_MODULUS)))) % FIELD_MODULUS));
         // validate the state has reset
         vm.assertEq(worddle.getCurrentRoundWorddle(), bytes32(uint256(keccak256(abi.encodePacked(bytes32(uint256(keccak256("abcdefghi")) % FIELD_MODULUS)))) % FIELD_MODULUS));
         vm.assertEq(worddle.getCurrentRoundStatus(), address(0));
         vm.assertEq(worddle.s_currentRound(), 2);
-
-        
     }
-    function testIncorrectGuessFails() public{
+
+    function testIncorrectGuessFails() public {
         bytes32 INCORRECT_ANSWER = bytes32(uint256(keccak256(abi.encodePacked(bytes32(uint256(keccak256("outnumber")) % FIELD_MODULUS)))) % FIELD_MODULUS);
         bytes32 INCORRECT_GUESS = bytes32(uint256(keccak256("outnumber")) % FIELD_MODULUS);
         bytes memory incorrectProof = _getProof(INCORRECT_GUESS, INCORRECT_ANSWER, user);
         vm.prank(user);
         vm.expectRevert();
         worddle.makeGuess(incorrectProof);
-
     }
-    
+
+    function testSecondWinnerPasses() public {
+        address user2 = makeAddr("user2");
+        vm.prank(user);
+        worddle.makeGuess(proof);
+        vm.assertEq(worddle.s_winnerWins(user), 1);
+        vm.assertEq(worddle.balanceOf(user, 0), 1);
+        vm.assertEq(worddle.balanceOf(user, 1), 0);
+
+        bytes memory proof2 = _getProof(CORRECT_GUESS, ANSWER, user2);
+        vm.prank(user2);
+        worddle.makeGuess(proof2);
+        vm.assertEq(worddle.s_winnerWins(user2), 0);
+        vm.assertEq(worddle.balanceOf(user2, 0), 0);
+        vm.assertEq(worddle.balanceOf(user2, 1), 1);
+    }
 }
